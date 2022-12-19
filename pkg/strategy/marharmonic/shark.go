@@ -1,4 +1,4 @@
-package harmonic
+package marharmonic
 
 import (
 	"math"

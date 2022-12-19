@@ -1,8 +1,9 @@
-package harmonic
+package marharmonic
 
 import (
 	"context"
 	"fmt"
+
 	"github.com/c9s/bbgo/pkg/bbgo"
 	"github.com/c9s/bbgo/pkg/data/tsv"
 	"github.com/c9s/bbgo/pkg/datatype/floats"
@@ -13,7 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const ID = "harmonic"
+const ID = "marharmonic"
 
 var log = logrus.WithField("strategy", ID)
 
@@ -344,21 +345,38 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				_ = s.orderExecutor.GracefulCancel(ctx)
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
 			}
+			// _, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
+			// 	Symbol:   s.Symbol,
+			// 	Side:     types.SideTypeBuy,
+			// 	Quantity: s.Quantity,
+			// 	Type:     types.OrderTypeMarket,
+			// 	Tag:      "shark long: buy in",
+			// })
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-				Symbol:   s.Symbol,
-				Side:     types.SideTypeBuy,
-				Quantity: s.Quantity,
-				Type:     types.OrderTypeMarket,
-				Tag:      "shark long: buy in",
+				Symbol:           s.Symbol,
+				Side:             types.SideTypeBuy,
+				Type:             types.OrderTypeMarket,
+				Quantity:         s.Quantity,
+				MarginSideEffect: types.SideEffectTypeMarginBuy,
+				Tag:              "shark long: buy in",
 			})
 			if err == nil {
+				// _, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
+				// 	Symbol:   s.Symbol,
+				// 	Side:     types.SideTypeSell,
+				// 	Quantity: s.Quantity,
+				// 	Price:    fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
+				// 	Type:     types.OrderTypeLimit,
+				// 	Tag:      "shark long: sell back",
+				// })
 				_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-					Symbol:   s.Symbol,
-					Side:     types.SideTypeSell,
-					Quantity: s.Quantity,
-					Price:    fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
-					Type:     types.OrderTypeLimit,
-					Tag:      "shark long: sell back",
+					Symbol:           s.Symbol,
+					Side:             types.SideTypeSell,
+					Quantity:         s.Quantity,
+					Price:            fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
+					Type:             types.OrderTypeLimit,
+					MarginSideEffect: types.SideEffectTypeAutoRepay,
+					Tag:              "shark long: sell back",
 				})
 			}
 			if err != nil {
@@ -371,20 +389,22 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
 			}
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-				Symbol:   s.Symbol,
-				Side:     types.SideTypeSell,
-				Quantity: s.Quantity,
-				Type:     types.OrderTypeMarket,
-				Tag:      "shark short: sell in",
+				Symbol:           s.Symbol,
+				Side:             types.SideTypeSell,
+				Quantity:         s.Quantity,
+				Type:             types.OrderTypeMarket,
+				MarginSideEffect: types.SideEffectTypeAutoRepay,
+				Tag:              "shark short: sell in",
 			})
 			if err == nil {
 				_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-					Symbol:   s.Symbol,
-					Side:     types.SideTypeBuy,
-					Quantity: s.Quantity,
-					Price:    fixedpoint.NewFromFloat(s.shark.Lows.Tail(100).Min()),
-					Type:     types.OrderTypeLimit,
-					Tag:      "shark short: buy back",
+					Symbol:           s.Symbol,
+					Side:             types.SideTypeBuy,
+					Quantity:         s.Quantity,
+					Price:            fixedpoint.NewFromFloat(s.shark.Lows.Tail(100).Min()),
+					Type:             types.OrderTypeLimit,
+					MarginSideEffect: types.SideEffectTypeMarginBuy,
+					Tag:              "shark short: buy back",
 				})
 			}
 			if err != nil {
