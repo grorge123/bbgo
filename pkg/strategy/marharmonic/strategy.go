@@ -211,6 +211,14 @@ func (s *Strategy) CalcAssetValue(price fixedpoint.Value) fixedpoint.Value {
 	return balances[s.Market.BaseCurrency].Total().Mul(price).Add(balances[s.Market.QuoteCurrency].Total())
 }
 
+func (s *Strategy) CurrentPosition() *types.Position {
+	return s.Position
+}
+
+func (s *Strategy) ClosePosition(ctx context.Context, percentage fixedpoint.Value) error {
+	return s.orderExecutor.ClosePosition(ctx, percentage)
+}
+
 func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	var instanceID = s.InstanceID()
 
@@ -232,6 +240,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	s.OnSuspend(func() {
 		// Cancel active orders
 		_ = s.orderExecutor.GracefulCancel(ctx)
+		bbgo.Sync(ctx, s)
 	})
 
 	s.OnEmergencyStop(func() {
@@ -345,6 +354,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				_ = s.orderExecutor.GracefulCancel(ctx)
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
 			}
+			log.Warnf("long at %v, position %v", price, s.Position.GetBase())
 			// _, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 			// 	Symbol:   s.Symbol,
 			// 	Side:     types.SideTypeBuy,
@@ -388,12 +398,13 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				_ = s.orderExecutor.GracefulCancel(ctx)
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
 			}
+			log.Warnf("Short at %v, position %v", price, s.Position.GetBase())
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 				Symbol:           s.Symbol,
 				Side:             types.SideTypeSell,
 				Quantity:         s.Quantity,
 				Type:             types.OrderTypeMarket,
-				MarginSideEffect: types.SideEffectTypeAutoRepay,
+				MarginSideEffect: types.SideEffectTypeMarginBuy,
 				Tag:              "shark short: sell in",
 			})
 			if err == nil {
@@ -403,7 +414,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					Quantity:         s.Quantity,
 					Price:            fixedpoint.NewFromFloat(s.shark.Lows.Tail(100).Min()),
 					Type:             types.OrderTypeLimit,
-					MarginSideEffect: types.SideEffectTypeMarginBuy,
+					MarginSideEffect: types.SideEffectTypeAutoRepay,
 					Tag:              "shark short: buy back",
 				})
 			}
