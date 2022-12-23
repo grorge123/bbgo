@@ -216,6 +216,9 @@ func (s *Strategy) CurrentPosition() *types.Position {
 }
 
 func (s *Strategy) ClosePosition(ctx context.Context, percentage fixedpoint.Value) error {
+	if err := s.orderExecutor.GracefulCancel(ctx); err != nil {
+		log.WithError(err).Errorf("graceful cancel order error")
+	}
 	return s.orderExecutor.ClosePosition(ctx, percentage)
 }
 
@@ -351,10 +354,14 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 
 		if s.shark.Rank(s.Window).Last()/float64(s.Window) > 0.99 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) < 0)
 			if s.Position.IsShort() {
-				_ = s.orderExecutor.GracefulCancel(ctx)
+
+				log.Warnf("Close short position instead long")
+				if err := s.orderExecutor.GracefulCancel(ctx); err != nil {
+					log.WithError(err).Errorf("graceful cancel order error")
+				}
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
 			}
-			log.Warnf("long at %v, position %v", price, s.Position.GetBase())
+			log.Warnf("long at %v, position %v, IsShort %t", price, s.Position.GetBase(), s.Position.IsShort())
 			// _, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 			// 	Symbol:   s.Symbol,
 			// 	Side:     types.SideTypeBuy,
@@ -395,10 +402,13 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 
 		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < 0.01 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) > 0)
 			if s.Position.IsLong() {
-				_ = s.orderExecutor.GracefulCancel(ctx)
+				log.Warnf("Close long position instead short")
+				if err := s.orderExecutor.GracefulCancel(ctx); err != nil {
+					log.WithError(err).Errorf("graceful cancel order error")
+				}
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
 			}
-			log.Warnf("Short at %v, position %v", price, s.Position.GetBase())
+			log.Warnf("Short at %v, position %v, IsLong %t", price, s.Position.GetBase(), s.Position.IsLong())
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 				Symbol:           s.Symbol,
 				Side:             types.SideTypeSell,

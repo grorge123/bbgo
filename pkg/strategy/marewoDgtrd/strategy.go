@@ -582,6 +582,9 @@ func (s *Strategy) PlaceSellOrder(ctx context.Context, price fixedpoint.Value) (
 	s.waitForTrade = waitForTrade
 	return closeOrder, &createdOrders[0]
 }
+func (s *Strategy) CurrentPosition() *types.Position {
+	return s.Position
+}
 
 // ClosePosition(context.Context) -> (closeOrder *types.Order, ok bool)
 // this will decorate the generated order from NewMarketCloseOrder
@@ -1145,70 +1148,70 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		if (longSignal.Index(1) && !shortSignal.Last() && IsBull) || lastPrice.Float64() <= buyLine {
 			price := lastPrice.Sub(atr.Div(types.Two))
 			// if total asset (including locked) could be used to buy
-			if quoteBalance.Div(price).Compare(s.Market.MinQuantity) >= 0 && quoteBalance.Compare(s.Market.MinNotional) >= 0 {
-				// cancel all orders to release lock
-				s.CancelAll(ctx)
+			// if quoteBalance.Div(price).Compare(s.Market.MinQuantity) >= 0 && quoteBalance.Compare(s.Market.MinNotional) >= 0 {
+			// cancel all orders to release lock
+			s.CancelAll(ctx)
 
-				// backup, since the s.sellPrice will be cleared when doing ClosePosition
-				sellPrice := s.sellPrice
-				log.Errorf("ewoChangeRate %v, emv %v", s.ewoChangeRate, s.emv.Last())
+			// backup, since the s.sellPrice will be cleared when doing ClosePosition
+			sellPrice := s.sellPrice
+			log.Errorf("ewoChangeRate %v, emv %v", s.ewoChangeRate, s.emv.Last())
 
-				// calculate report
-				if closeOrder, _ := s.PlaceBuyOrder(ctx, price); closeOrder != nil {
-					if s.Record {
-						log.Error("record l")
-					}
-					if !sellPrice.IsZero() {
-						if lastPrice.Compare(sellPrice) > 0 {
-							pnlRate := lastPrice.Sub(sellPrice).Div(lastPrice).Float64()
-							percentAvgTPfromOrder = percentAvgTPfromOrder*float64(counterTPfromOrder) + pnlRate
-							counterTPfromOrder += 1
-							percentAvgTPfromOrder /= float64(counterTPfromOrder)
-						} else {
-							pnlRate := sellPrice.Sub(lastPrice).Div(lastPrice).Float64()
-							percentAvgSLfromOrder = percentAvgSLfromOrder*float64(counterSLfromOrder) + pnlRate
-							counterSLfromOrder += 1
-							percentAvgSLfromOrder /= float64(counterSLfromOrder)
-						}
+			// calculate report
+			if closeOrder, _ := s.PlaceBuyOrder(ctx, price); closeOrder != nil {
+				if s.Record {
+					log.Error("record l")
+				}
+				if !sellPrice.IsZero() {
+					if lastPrice.Compare(sellPrice) > 0 {
+						pnlRate := lastPrice.Sub(sellPrice).Div(lastPrice).Float64()
+						percentAvgTPfromOrder = percentAvgTPfromOrder*float64(counterTPfromOrder) + pnlRate
+						counterTPfromOrder += 1
+						percentAvgTPfromOrder /= float64(counterTPfromOrder)
 					} else {
-						panic("no sell price")
+						pnlRate := sellPrice.Sub(lastPrice).Div(lastPrice).Float64()
+						percentAvgSLfromOrder = percentAvgSLfromOrder*float64(counterSLfromOrder) + pnlRate
+						counterSLfromOrder += 1
+						percentAvgSLfromOrder /= float64(counterSLfromOrder)
 					}
+				} else {
+					log.Error("no sell price")
 				}
 			}
+			// }
 		}
 		if (shortSignal.Index(1) && !longSignal.Last() && IsBear) || lastPrice.Float64() >= sellLine {
 			price := lastPrice.Add(atr.Div(types.Two))
 			// if total asset (including locked) could be used to sell
-			if baseBalance.Mul(price).Compare(s.Market.MinNotional) >= 0 && baseBalance.Compare(s.Market.MinQuantity) >= 0 {
-				// cancel all orders to release lock
-				s.CancelAll(ctx)
+			// if baseBalance.Mul(price).Compare(s.Market.MinNotional) >= 0 && baseBalance.Compare(s.Market.MinQuantity) >= 0 {
+			// cancel all orders to release lock
+			s.CancelAll(ctx)
 
-				// backup, since the s.buyPrice will be cleared when doing ClosePosition
-				buyPrice := s.buyPrice
-				log.Errorf("ewoChangeRate: %v, emv %v", s.ewoChangeRate, s.emv.Last())
+			// backup, since the s.buyPrice will be cleared when doing ClosePosition
+			buyPrice := s.buyPrice
+			log.Errorf("ewoChangeRate: %v, emv %v", s.ewoChangeRate, s.emv.Last())
 
-				// calculate report
-				if closeOrder, _ := s.PlaceSellOrder(ctx, price); closeOrder != nil {
-					if s.Record {
-						log.Error("record s")
-					}
-					if !buyPrice.IsZero() {
-						if lastPrice.Compare(buyPrice) > 0 {
-							pnlRate := lastPrice.Sub(buyPrice).Div(buyPrice).Float64()
-							percentAvgTPfromOrder = percentAvgTPfromOrder*float64(counterTPfromOrder) + pnlRate
-							counterTPfromOrder += 1
-							percentAvgTPfromOrder /= float64(counterTPfromOrder)
-						} else {
-							pnlRate := buyPrice.Sub(lastPrice).Div(buyPrice).Float64()
-							percentAvgSLfromOrder = percentAvgSLfromOrder*float64(counterSLfromOrder) + pnlRate
-							counterSLfromOrder += 1
-							percentAvgSLfromOrder /= float64(counterSLfromOrder)
-						}
+			// calculate report
+			if closeOrder, _ := s.PlaceSellOrder(ctx, price); closeOrder != nil {
+				if s.Record {
+					log.Error("record s")
+				}
+				if !buyPrice.IsZero() {
+					if lastPrice.Compare(buyPrice) > 0 {
+						pnlRate := lastPrice.Sub(buyPrice).Div(buyPrice).Float64()
+						percentAvgTPfromOrder = percentAvgTPfromOrder*float64(counterTPfromOrder) + pnlRate
+						counterTPfromOrder += 1
+						percentAvgTPfromOrder /= float64(counterTPfromOrder)
 					} else {
-						panic("no buy price")
+						pnlRate := buyPrice.Sub(lastPrice).Div(buyPrice).Float64()
+						percentAvgSLfromOrder = percentAvgSLfromOrder*float64(counterSLfromOrder) + pnlRate
+						counterSLfromOrder += 1
+						percentAvgSLfromOrder /= float64(counterSLfromOrder)
 					}
+				} else {
+					log.Error("no buy price")
 				}
 			}
+			// }
 		}
 	})
 
