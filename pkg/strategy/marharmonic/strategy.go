@@ -3,6 +3,7 @@ package marharmonic
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
 	"github.com/c9s/bbgo/pkg/data/tsv"
@@ -50,15 +51,21 @@ type Strategy struct {
 	AccountValueCalculator *bbgo.AccountValueCalculator
 
 	// whether to draw graph or not by the end of backtest
-	DrawGraph       bool   `json:"drawGraph"`
-	GraphPNLPath    string `json:"graphPNLPath"`
-	GraphCumPNLPath string `json:"graphCumPNLPath"`
+	DrawGraph               bool      `json:"drawGraph"`
+	GraphPNLPath            string    `json:"graphPNLPath"`
+	GraphCumPNLPath         string    `json:"graphCumPNLPath"`
+	TrailingCallbackRate    []float64 `json:"trailingCallbackRate" modifiable:"true"`
+	TrailingActivationRatio []float64 `json:"trailingActivationRatio" modifiable:"true"`
+	lowShark                float64   `json:"lowShark"`
+	highShark               float64   `json:"lowShark"`
 
 	// for position
 	buyPrice     float64 `persistence:"buy_price"`
 	sellPrice    float64 `persistence:"sell_price"`
 	highestPrice float64 `persistence:"highest_price"`
 	lowestPrice  float64 `persistence:"lowest_price"`
+	highestShark float64 `persistence:"highest_shark"`
+	lowestShark  float64 `persistence:"lowest_shark"`
 
 	// Accumulated profit report
 	AccumulatedProfitReport *AccumulatedProfitReport `json:"accumulatedProfitReport"`
@@ -219,7 +226,36 @@ func (s *Strategy) ClosePosition(ctx context.Context, percentage fixedpoint.Valu
 	if err := s.orderExecutor.GracefulCancel(ctx); err != nil {
 		log.WithError(err).Errorf("graceful cancel order error")
 	}
+	s.lowestShark = 0
+	s.highestShark = 0
 	return s.orderExecutor.ClosePosition(ctx, percentage)
+}
+
+func (s *Strategy) trailingCheck(price float64, direction string) bool {
+	if s.highestPrice > 0 && s.highestPrice < price {
+		s.highestPrice = price
+	}
+	if s.lowestPrice > 0 && s.lowestPrice > price {
+		s.lowestPrice = price
+	}
+	isShort := direction == "short"
+	if isShort && s.sellPrice == 0 || !isShort && s.buyPrice == 0 {
+		return false
+	}
+	for i := len(s.TrailingCallbackRate) - 1; i >= 0; i-- {
+		trailingCallbackRate := s.TrailingCallbackRate[i]
+		trailingActivationRatio := s.TrailingActivationRatio[i]
+		if isShort {
+			if (s.lowestShark-s.lowestPrice)/s.lowestPrice > trailingActivationRatio {
+				return (price-s.lowestPrice)/s.lowestPrice > trailingCallbackRate
+			}
+		} else {
+			if (s.highestPrice-s.highestShark)/s.buyPrice > trailingActivationRatio {
+				return (s.highestPrice-price)/s.buyPrice > trailingCallbackRate
+			}
+		}
+	}
+	return false
 }
 
 func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
@@ -346,13 +382,29 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.shark.LoadK((*klines)[0:])
 	}
 	s.session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.Interval, func(kline types.KLine) {
-
+		price, ok := s.session.LastPrice(s.Symbol)
+		if !ok {
+			log.Error("cannot get lastprice")
+		}
+		pricef := price.Float64()
+		lowf := math.Min(kline.Low.Float64(), pricef)
+		highf := math.Max(kline.High.Float64(), pricef)
+		if s.lowestPrice > 0 && lowf < s.lowestPrice {
+			s.lowestPrice = lowf
+		}
+		if s.highestPrice > 0 && highf > s.highestPrice {
+			s.highestPrice = highf
+		}
 		log.Infof("Shark Score: %f, Current Price: %f", s.shark.Last(), kline.Close.Float64())
 
-		//previousRegime := s.shark.Values.Tail(10).Mean()
-		//zeroThreshold := 5.
-
-		if s.shark.Rank(s.Window).Last()/float64(s.Window) > 0.99 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) < 0)
+		previousRegime := s.shark.Values.Tail(10).Mean()
+		zeroThreshold := 5.
+		if s.shark.Rank(s.Window).Last()/float64(s.Window) > 0.99 {
+			log.Error("Will Start Long")
+		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < 0.01 {
+			log.Error("Will Start Short")
+		}
+		if s.shark.Rank(s.Window).Last()/float64(s.Window) > s.highShark && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) < 0) {
 			if s.Position.IsShort() {
 
 				log.Warnf("Close short position instead long")
@@ -360,15 +412,9 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					log.WithError(err).Errorf("graceful cancel order error")
 				}
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
+				s.lowestShark = 0
 			}
 			log.Warnf("long at %v, position %v, IsShort %t", price, s.Position.GetBase(), s.Position.IsShort())
-			// _, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-			// 	Symbol:   s.Symbol,
-			// 	Side:     types.SideTypeBuy,
-			// 	Quantity: s.Quantity,
-			// 	Type:     types.OrderTypeMarket,
-			// 	Tag:      "shark long: buy in",
-			// })
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 				Symbol:           s.Symbol,
 				Side:             types.SideTypeBuy,
@@ -378,35 +424,34 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				Tag:              "shark long: buy in",
 			})
 			if err == nil {
-				// _, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-				// 	Symbol:   s.Symbol,
-				// 	Side:     types.SideTypeSell,
-				// 	Quantity: s.Quantity,
-				// 	Price:    fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
-				// 	Type:     types.OrderTypeLimit,
-				// 	Tag:      "shark long: sell back",
-				// })
-				_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-					Symbol:           s.Symbol,
-					Side:             types.SideTypeSell,
-					Quantity:         s.Quantity,
-					Price:            fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
-					Type:             types.OrderTypeLimit,
-					MarginSideEffect: types.SideEffectTypeAutoRepay,
-					Tag:              "shark long: sell back",
-				})
+				// 	_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
+				// 		Symbol:           s.Symbol,
+				// 		Side:             types.SideTypeSell,
+				// 		Quantity:         s.Quantity,
+				// 		Price:            fixedpoint.NewFromFloat(s.shark.Highs.Tail(100).Max()),
+				// 		Type:             types.OrderTypeLimit,
+				// 		MarginSideEffect: types.SideEffectTypeAutoRepay,
+				// 		Tag:              "shark long: sell back",
+				// 	})
+				if s.highestShark == 0 {
+					s.highestShark = s.shark.Highs.Tail(100).Max()
+				} else {
+					s.highestShark = math.Min(s.highestShark, s.shark.Highs.Tail(100).Max())
+				}
+				log.Warnf("Update highest Shark: %v, now shark: %v", s.highestShark, s.shark.Highs.Tail(100).Max())
 			}
 			if err != nil {
 				log.Errorln(err)
 			}
 
-		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < 0.01 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) > 0)
+		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < s.lowShark && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) > 0) {
 			if s.Position.IsLong() {
 				log.Warnf("Close long position instead short")
 				if err := s.orderExecutor.GracefulCancel(ctx); err != nil {
 					log.WithError(err).Errorf("graceful cancel order error")
 				}
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
+				s.highestShark = 0
 			}
 			log.Warnf("Short at %v, position %v, IsLong %t", price, s.Position.GetBase(), s.Position.IsLong())
 			_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
@@ -418,19 +463,32 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				Tag:              "shark short: sell in",
 			})
 			if err == nil {
-				_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
-					Symbol:           s.Symbol,
-					Side:             types.SideTypeBuy,
-					Quantity:         s.Quantity,
-					Price:            fixedpoint.NewFromFloat(s.shark.Lows.Tail(100).Min()),
-					Type:             types.OrderTypeLimit,
-					MarginSideEffect: types.SideEffectTypeAutoRepay,
-					Tag:              "shark short: buy back",
-				})
+				// 	_, err = s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
+				// 		Symbol:           s.Symbol,
+				// 		Side:             types.SideTypeBuy,
+				// 		Quantity:         s.Quantity,
+				// 		Price:            fixedpoint.NewFromFloat(s.shark.Lows.Tail(100).Min()),
+				// 		Type:             types.OrderTypeLimit,
+				// 		MarginSideEffect: types.SideEffectTypeAutoRepay,
+				// 		Tag:              "shark short: buy back",
+				// 	})
+				if s.lowestShark == 0 {
+					s.lowestShark = s.shark.Lows.Tail(100).Min()
+				} else {
+					s.lowestShark = math.Max(s.lowestShark, s.shark.Lows.Tail(100).Min())
+				}
+				log.Warnf("Update lowest Shark: %v, now shark: %v", s.lowestShark, s.shark.Lows.Tail(100).Min())
 			}
 			if err != nil {
 				log.Errorln(err)
 			}
+		}
+		exitCondition := s.trailingCheck(highf, "short") || s.trailingCheck(lowf, "long")
+		if exitCondition {
+			log.Warnf("Close position %v, at %v", s.Position.GetBase(), price)
+			_ = s.ClosePosition(ctx, fixedpoint.One)
+			s.lowestShark = 0
+			s.highestShark = 0
 		}
 	}))
 
