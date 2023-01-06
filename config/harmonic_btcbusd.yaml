@@ -1,0 +1,52 @@
+# go run ./cmd/bbgo run --config ./run/bbgo.yaml --dotenv ./run/.env.local
+---
+persistence:
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    db: 0
+
+sessions:
+  binance_iso_btcbusd:
+    exchange: binance
+    margin: true
+    isolatedMargin: true
+    isolatedMarginSymbol: BTCBUSD
+
+
+exchangeStrategies:
+
+- on: binance
+  marharmonic:
+    symbol: BTCBUSD
+    interval: 1m
+    window: 304
+    quantity: 0.0007
+    # Draw pnl
+    drawGraph: false
+    graphPNLPath: "./png/harpnl.png"
+    graphCumPNLPath: "./png/harcumpnl.png"
+    trailingActivationRatio: [0, 0.0004, 0.0008, 0.002, 0.01]
+    trailingCallbackRate: [0, 0.000065, 0.00014, 0.0003, 0.0016]
+    lowFilter: 0.008288122312863449
+    highFilter: 0.503219186283794
+    exits:
+      - roiStopLoss:
+          percentage: 0.25%
+          cancelActiveOrders: true
+
+backtest:
+  startTime: "2023-01-04"
+  endTime: "2023-01-05"
+  sessions:
+  - binance
+  symbols:
+  - BTCBUSD
+  accounts:
+    binance:
+      balances:
+        BTC: 1.4
+        BUSD: 4000
+# PROFIT: $ 77.09
+# UNREALIZED PROFIT: $ 0.36
+

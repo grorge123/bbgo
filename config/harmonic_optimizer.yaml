@@ -1,0 +1,50 @@
+# usage:
+#
+#   go run ./cmd/bbgo hoptimize --config config/harmonic_btcbusd.yaml  --optimizer-config config/harmonic_optimizer.yaml
+#
+---
+# The search algorithm. Supports the following algorithms:
+# - tpe: (default) Tree-structured Parzen Estimators
+# - cmaes: Covariance Matrix Adaptation Evolution Strategy
+# - sobol: Quasi-monte carlo sampling based on Sobol sequence
+# - random: random search
+# Reference: https://c-bata.medium.com/practical-bayesian-optimization-in-go-using-goptuna-edf97195fcb5
+algorithm: tpe
+
+# The objective function to be maximized. Possible options are:
+# - profit: by trading profit
+# - volume: by trading volume
+# - equity: by equity difference
+objectiveBy: profit
+
+# Maximum number of search evaluations.
+maxEvaluation: 1000
+
+executor:
+  type: local
+  local:
+    maxNumberOfProcesses: 10
+
+matrix:
+- type: rangeInt # alias: iterate
+  path: '/exchangeStrategies/0/marharmonic/window'
+  label: window
+  min: 10
+  max: 1000
+
+- type: rangeFloat # alias: iterate
+  path: '/exchangeStrategies/0/marharmonic/lowFilter'
+  label: lowFilter
+  min: 0
+  max: 0.5
+
+- type: rangeFloat # alias: iterate
+  path: '/exchangeStrategies/0/marharmonic/highFilter'
+  label: highFilter
+  min: 0.5
+  max: 1
+
+
+# - type: string # alias: iterate
+#   path: '/exchangeStrategies/0/marharmonic/interval'
+#   values: ["1m", "5m", "15m", "30m", "1h"]
