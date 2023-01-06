@@ -56,8 +56,6 @@ type Strategy struct {
 	GraphCumPNLPath         string    `json:"graphCumPNLPath"`
 	TrailingCallbackRate    []float64 `json:"trailingCallbackRate" modifiable:"true"`
 	TrailingActivationRatio []float64 `json:"trailingActivationRatio" modifiable:"true"`
-	lowShark                float64   `json:"lowShark"`
-	highShark               float64   `json:"lowShark"`
 
 	// for position
 	buyPrice     float64 `persistence:"buy_price"`
@@ -239,7 +237,7 @@ func (s *Strategy) trailingCheck(price float64, direction string) bool {
 		s.lowestPrice = price
 	}
 	isShort := direction == "short"
-	if isShort && s.sellPrice == 0 || !isShort && s.buyPrice == 0 {
+	if isShort && s.lowestShark == 0 || !isShort && s.highestShark == 0 {
 		return false
 	}
 	for i := len(s.TrailingCallbackRate) - 1; i >= 0; i-- {
@@ -272,7 +270,6 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	if s.TradeStats == nil {
 		s.TradeStats = types.NewTradeStats(s.Symbol)
 	}
-
 	// StrategyController
 	s.Status = types.StrategyStatusRunning
 
@@ -382,6 +379,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.shark.LoadK((*klines)[0:])
 	}
 	s.session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.Interval, func(kline types.KLine) {
+
 		price, ok := s.session.LastPrice(s.Symbol)
 		if !ok {
 			log.Error("cannot get lastprice")
@@ -395,16 +393,22 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		if s.highestPrice > 0 && highf > s.highestPrice {
 			s.highestPrice = highf
 		}
+
+		if s.Position.IsLong() {
+			if s.highestShark != 0 && pricef >= s.highestShark {
+				log.Errorf("price: %v upper than shark: %v", pricef, s.highestShark)
+			}
+		} else if s.Position.IsShort() {
+			if s.lowestShark != 0 && pricef <= s.lowestShark {
+				log.Errorf("price: %v upper than shark: %v", pricef, s.lowestShark)
+			}
+		}
 		log.Infof("Shark Score: %f, Current Price: %f", s.shark.Last(), kline.Close.Float64())
 
-		previousRegime := s.shark.Values.Tail(10).Mean()
-		zeroThreshold := 5.
-		if s.shark.Rank(s.Window).Last()/float64(s.Window) > 0.99 {
-			log.Error("Will Start Long")
-		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < 0.01 {
-			log.Error("Will Start Short")
-		}
-		if s.shark.Rank(s.Window).Last()/float64(s.Window) > s.highShark && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) < 0) {
+		// previousRegime := s.shark.Values.Tail(10).Mean()
+		// zeroThreshold := 5.
+
+		if s.shark.Rank(s.Window).Last()/float64(s.Window) > 0.99 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) < 0) {
 			if s.Position.IsShort() {
 
 				log.Warnf("Close short position instead long")
@@ -444,7 +448,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				log.Errorln(err)
 			}
 
-		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < s.lowShark && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) > 0) {
+		} else if s.shark.Rank(s.Window).Last()/float64(s.Window) < 0.01 { // && ((previousRegime < zeroThreshold && previousRegime > -zeroThreshold) || s.shark.Index(1) > 0) {
 			if s.Position.IsLong() {
 				log.Warnf("Close long position instead short")
 				if err := s.orderExecutor.GracefulCancel(ctx); err != nil {

@@ -730,7 +730,8 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		if s.waitForTrade {
 			price := s.entryPrice
 			if price.IsZero() {
-				panic("no price found")
+				log.Errorf("no price found")
+				return
 			}
 			pnlRate := trade.Price.Sub(price).Abs().Div(trade.Price).Float64()
 			if s.Record {
@@ -757,7 +758,8 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					percentAvgSLfromOrder /= float64(counterSLfromOrder)
 				}
 			} else {
-				panic(fmt.Sprintf("no sell(%v) or buy price(%v), %v", s.sellPrice, s.buyPrice, trade))
+				log.Errorf(fmt.Sprintf("no sell(%v) or buy price(%v), %v", s.sellPrice, s.buyPrice, trade))
+				return
 			}
 			s.waitForTrade = false
 		}
@@ -770,7 +772,8 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.sellPrice = fixedpoint.Zero
 				s.peakPrice = s.Position.AverageCost
 			} else if sign == 0 {
-				panic("not going to happen")
+				log.Errorf("not going to happen")
+				return
 			} else {
 				log.Infof("base become negative, %v", trade)
 				s.buyPrice = fixedpoint.Zero
