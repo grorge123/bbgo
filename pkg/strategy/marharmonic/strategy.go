@@ -276,8 +276,8 @@ func (s *Strategy) calculateAvailable(ctx context.Context, currentPrice fixedpoi
 	}
 	baseQuoteCurrencyBalance := QuoteCurrencyBalance.Total().Div(currentPrice)
 	baseQty := quoteQty.Div(currentPrice)
-	log.Infof("currentPrice %v, quoteQty: %v, BaseCurrencyBalance: %v, QuoteCurrencyBalance: %v, baseQty: %v, baseQuoteCurrencyBalance: %v",
-		currentPrice, quoteQty, BaseCurrencyBalance.Total(), QuoteCurrencyBalance.Total(), baseQty, baseQuoteCurrencyBalance)
+	// log.Infof("currentPrice %v, quoteQty: %v, BaseCurrencyBalance: %v, QuoteCurrencyBalance: %v, baseQty: %v, baseQuoteCurrencyBalance: %v",
+	// currentPrice, quoteQty, BaseCurrencyBalance.Total(), QuoteCurrencyBalance.Total(), baseQty, baseQuoteCurrencyBalance)
 	if side == types.SideTypeSell {
 		return baseQty.Sub(baseQuoteCurrencyBalance)
 	} else {
@@ -452,7 +452,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.LowestShark = 0
 			}
 			available := s.calculateAvailable(ctx, price, types.SideTypeBuy, s.Leverage)
-			log.Warnf("Long available: %v", available)
+			// log.Warnf("Long available: %v", available)
 			if available.Compare(s.Quantity) >= 0 {
 				log.Warnf("long at %v, position %v, IsShort %t", price, s.Position.GetBase(), s.Position.IsShort())
 				_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
@@ -497,7 +497,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.HighestShark = 0
 			}
 			available := s.calculateAvailable(ctx, price, types.SideTypeSell, s.Leverage)
-			log.Warnf("Short available: %v", available)
+			// log.Warnf("Short available: %v", available)
 			if available.Compare(s.Quantity) >= 0 {
 				log.Warnf("Short at %v, position %v, IsLong %t", price, s.Position.GetBase(), s.Position.IsLong())
 				_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
