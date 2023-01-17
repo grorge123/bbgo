@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 
 	"github.com/c9s/bbgo/pkg/bbgo"
@@ -111,6 +112,9 @@ type Strategy struct {
 
 	ResetPositionWhenStart bool `json:"resetPositionWhenStart"`
 
+	// PrometheusLabels will be used as the base prometheus labels
+	PrometheusLabels prometheus.Labels `json:"prometheusLabels"`
+
 	// FeeRate is used for calculating the minimal profit spread.
 	// it makes sure that your grid configuration is profitable.
 	FeeRate fixedpoint.Value `json:"feeRate"`
@@ -135,6 +139,7 @@ type Strategy struct {
 	gridReadyCallbacks  []func()
 	gridProfitCallbacks []func(stats *GridProfitStats, profit *GridProfit)
 	gridClosedCallbacks []func()
+	gridErrorCallbacks  []func(err error)
 }
 
 func (s *Strategy) ID() string {
@@ -170,6 +175,10 @@ func (s *Strategy) Validate() error {
 		return fmt.Errorf("either quantity, amount or quoteInvestment must be set")
 	}
 
+	return nil
+}
+
+func (s *Strategy) Defaults() error {
 	return nil
 }
 
@@ -227,7 +236,7 @@ func (s *Strategy) handleOrderCanceled(o types.Order) {
 	ctx := context.Background()
 	if s.CloseWhenCancelOrder {
 		s.logger.Infof("one of the grid orders is canceled, now closing grid...")
-		if err := s.closeGrid(ctx); err != nil {
+		if err := s.CloseGrid(ctx); err != nil {
 			s.logger.WithError(err).Errorf("graceful order cancel error")
 		}
 	}
@@ -355,10 +364,7 @@ func (s *Strategy) processFilledOrder(o types.Order) {
 		profit := s.calculateProfit(o, newPrice, newQuantity)
 		s.logger.Infof("GENERATED GRID PROFIT: %+v", profit)
 		s.GridProfitStats.AddProfit(profit)
-
 		s.EmitGridProfit(s.GridProfitStats, profit)
-		bbgo.Notify(profit)
-		bbgo.Notify(s.GridProfitStats)
 
 	case types.SideTypeBuy:
 		newSide = types.SideTypeSell
@@ -668,6 +674,8 @@ func (s *Strategy) newOrderUpdateHandler(ctx context.Context, session *bbgo.Exch
 	return func(o types.Order) {
 		s.handleOrderFilled(o)
 		bbgo.Sync(ctx, s)
+
+		s.updateOpenOrderPricesMetrics(s.orderExecutor.ActiveMakerOrders().Orders())
 	}
 }
 
@@ -679,7 +687,7 @@ func (s *Strategy) newStopLossPriceHandler(ctx context.Context, session *bbgo.Ex
 
 		s.logger.Infof("last low price %f hits stopLossPrice %f, closing grid", k.Low.Float64(), s.StopLossPrice.Float64())
 
-		if err := s.closeGrid(ctx); err != nil {
+		if err := s.CloseGrid(ctx); err != nil {
 			s.logger.WithError(err).Errorf("can not close grid")
 			return
 		}
@@ -705,7 +713,7 @@ func (s *Strategy) newTakeProfitHandler(ctx context.Context, session *bbgo.Excha
 
 		s.logger.Infof("last high price %f hits takeProfitPrice %f, closing grid", k.High.Float64(), s.TakeProfitPrice.Float64())
 
-		if err := s.closeGrid(ctx); err != nil {
+		if err := s.CloseGrid(ctx); err != nil {
 			s.logger.WithError(err).Errorf("can not close grid")
 			return
 		}
@@ -723,8 +731,12 @@ func (s *Strategy) newTakeProfitHandler(ctx context.Context, session *bbgo.Excha
 	})
 }
 
-// closeGrid closes the grid orders
-func (s *Strategy) closeGrid(ctx context.Context) error {
+func (s *Strategy) OpenGrid(ctx context.Context) error {
+	return s.openGrid(ctx, s.session)
+}
+
+// CloseGrid closes the grid orders
+func (s *Strategy) CloseGrid(ctx context.Context) error {
 	bbgo.Sync(ctx, s)
 
 	// now we can cancel the open orders
@@ -835,6 +847,10 @@ func (s *Strategy) openGrid(ctx context.Context, session *bbgo.ExchangeSession) 
 		return err
 	}
 
+	// update the number of orders to metrics
+	baseLabels := s.newPrometheusLabels()
+	metricsGridNumOfOrders.With(baseLabels).Set(float64(len(createdOrders)))
+
 	var orderIds []uint64
 
 	for _, order := range createdOrders {
@@ -854,7 +870,30 @@ func (s *Strategy) openGrid(ctx context.Context, session *bbgo.ExchangeSession) 
 
 	s.logger.Infof("ALL GRID ORDERS SUBMITTED")
 	s.EmitGridReady()
+
+	s.updateOpenOrderPricesMetrics(createdOrders)
 	return nil
+}
+
+func (s *Strategy) updateOpenOrderPricesMetrics(orders []types.Order) {
+	orders = sortOrdersByPriceAscending(orders)
+	num := len(orders)
+	metricsGridOrderPrices.Reset()
+	for idx, order := range orders {
+		labels := s.newPrometheusLabels()
+		labels["side"] = order.Side.String()
+		labels["ith"] = strconv.Itoa(num - idx)
+		metricsGridOrderPrices.With(labels).Set(order.Price.Float64())
+	}
+}
+
+func sortOrdersByPriceAscending(orders []types.Order) []types.Order {
+	sort.Slice(orders, func(i, j int) bool {
+		a := orders[i]
+		b := orders[j]
+		return a.Price.Compare(b.Price) < 0
+	})
+	return orders
 }
 
 func (s *Strategy) debugGridOrders(submitOrders []types.SubmitOrder, lastPrice fixedpoint.Value) {
@@ -1253,6 +1292,19 @@ func scanMissingPinPrices(orderBook *bbgo.ActiveOrderBook, pins []Pin) PriceMap 
 	return missingPrices
 }
 
+func (s *Strategy) newPrometheusLabels() prometheus.Labels {
+	labels := prometheus.Labels{
+		"exchange": s.session.Name,
+		"symbol":   s.Symbol,
+	}
+
+	if s.PrometheusLabels == nil {
+		return labels
+	}
+
+	return mergeLabels(s.PrometheusLabels, labels)
+}
+
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	instanceID := s.InstanceID()
 
@@ -1290,6 +1342,14 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.
 		s.Position = types.NewPositionFromMarket(s.Market)
 	}
 
+	// initialize and register prometheus metrics
+	if s.PrometheusLabels != nil {
+		initMetrics(labelKeys(s.PrometheusLabels))
+	} else {
+		initMetrics(nil)
+	}
+	registerMetrics()
+
 	if s.ResetPositionWhenStart {
 		s.Position.Reset()
 	}
@@ -1317,6 +1377,16 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.
 	orderExecutor.ActiveMakerOrders().OnFilled(s.newOrderUpdateHandler(ctx, session))
 
 	s.orderExecutor = orderExecutor
+
+	s.OnGridProfit(func(stats *GridProfitStats, profit *GridProfit) {
+		bbgo.Notify(profit)
+		bbgo.Notify(stats)
+	})
+
+	s.OnGridProfit(func(stats *GridProfitStats, profit *GridProfit) {
+		labels := s.newPrometheusLabels()
+		metricsGridProfit.With(labels).Set(stats.TotalQuoteProfit.Float64())
+	})
 
 	// TODO: detect if there are previous grid orders on the order book
 	if s.ClearOpenOrdersWhenStart {
@@ -1351,7 +1421,7 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.
 			return
 		}
 
-		if err := s.closeGrid(ctx); err != nil {
+		if err := s.CloseGrid(ctx); err != nil {
 			s.logger.WithError(err).Errorf("grid graceful order cancel error")
 		}
 	})
