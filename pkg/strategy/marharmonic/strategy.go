@@ -476,7 +476,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					if s.HighestShark == 0 {
 						s.HighestShark = s.shark.Highs.Tail(100).Max()
 					} else {
-						s.HighestShark = math.Min(s.HighestShark, s.shark.Highs.Tail(100).Max())
+						s.HighestShark = math.Max(s.HighestShark, s.shark.Highs.Tail(100).Max())
 					}
 					log.Warnf("Update highest Shark: %v, now shark: %v", s.HighestShark, s.shark.Highs.Tail(100).Max())
 				}
@@ -521,7 +521,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					if s.LowestShark == 0 {
 						s.LowestShark = s.shark.Lows.Tail(100).Min()
 					} else {
-						s.LowestShark = math.Max(s.LowestShark, s.shark.Lows.Tail(100).Min())
+						s.LowestShark = math.Min(s.LowestShark, s.shark.Lows.Tail(100).Min())
 					}
 					log.Warnf("Update lowest Shark: %v, now shark: %v", s.LowestShark, s.shark.Lows.Tail(100).Min())
 				}
