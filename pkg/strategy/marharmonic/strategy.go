@@ -258,20 +258,16 @@ func (s *Strategy) trailingCheck(price float64, direction string) bool {
 	}
 	return false
 }
-func (s *Strategy) calculateAvailable(ctx context.Context, currentPrice fixedpoint.Value, side types.SideType, leverage fixedpoint.Value) fixedpoint.Value {
-	quoteQty, err := bbgo.CalculateQuoteQuantity(ctx, s.session, s.Market.QuoteCurrency, leverage)
-	if err != nil {
-		log.WithError(err).Errorf("can not update %s quote balance from exchange", s.Symbol)
-		return fixedpoint.Zero
-	}
+func (s *Strategy) calculateAvailable(ctx context.Context, currentPrice fixedpoint.Value, side types.SideType, quoteQty fixedpoint.Value) fixedpoint.Value {
+
 	BaseCurrencyBalance, ok := s.session.GetAccount().Balance(s.Market.BaseCurrency)
 	if !ok {
-		log.WithError(err).Errorf("can not get Account")
+		log.Errorf("can not get Account")
 		return fixedpoint.Zero
 	}
 	QuoteCurrencyBalance, ok := s.session.GetAccount().Balance(s.Market.QuoteCurrency)
 	if !ok {
-		log.WithError(err).Errorf("can not get Account")
+		log.Errorf("can not get Account")
 		return fixedpoint.Zero
 	}
 	baseQuoteCurrencyBalance := QuoteCurrencyBalance.Total().Div(currentPrice)
@@ -406,8 +402,18 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	if klines, ok := kLineStore.KLinesOfInterval(s.shark.Interval); ok {
 		s.shark.LoadK((*klines)[0:])
 	}
-	s.session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.Interval, func(kline types.KLine) {
 
+	quoteQty, err := bbgo.CalculateQuoteQuantity(ctx, s.session, s.Market.QuoteCurrency, s.Leverage)
+	if err != nil {
+		log.WithError(err).Errorf("can not update %s quote balance from exchange", s.Symbol)
+	}
+	log.Info("Initial quoteQty: %v", quoteQty)
+
+	s.session.MarketDataStream.OnKLineClosed(types.KLineWith(s.Symbol, s.Interval, func(kline types.KLine) {
+		// StrategyController
+		if s.Status != types.StrategyStatusRunning {
+			return
+		}
 		price, ok := s.session.LastPrice(s.Symbol)
 		if !ok {
 			log.Error("cannot get lastprice")
@@ -431,7 +437,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				log.Errorf("price: %v lower than shark: %v", pricef, s.LowestShark)
 			}
 		}
-		log.Infof("Shark Score: %f, Current Price: %f", s.shark.Last(), kline.Close.Float64())
+		log.Infof("Shark Score: %f, Current Price: %f Caculate Shark: %v", s.shark.Last(), kline.Close.Float64(), s.shark.Rank(s.Window).Last()/float64(s.Window))
 
 		// previousRegime := s.shark.Values.Tail(10).Mean()
 		// zeroThreshold := 5.
@@ -451,7 +457,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
 				s.LowestShark = 0
 			}
-			available := s.calculateAvailable(ctx, price, types.SideTypeBuy, s.Leverage)
+			available := s.calculateAvailable(ctx, price, types.SideTypeBuy, quoteQty)
 			// log.Warnf("Long available: %v", available)
 			if available.Compare(s.Quantity) >= 0 {
 				log.Warnf("long at %v, position %v, IsShort %t", price, s.Position.GetBase(), s.Position.IsShort())
@@ -496,7 +502,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
 				s.HighestShark = 0
 			}
-			available := s.calculateAvailable(ctx, price, types.SideTypeSell, s.Leverage)
+			available := s.calculateAvailable(ctx, price, types.SideTypeSell, quoteQty)
 			// log.Warnf("Short available: %v", available)
 			if available.Compare(s.Quantity) >= 0 {
 				log.Warnf("Short at %v, position %v, IsLong %t", price, s.Position.GetBase(), s.Position.IsLong())
@@ -532,7 +538,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				log.Warnf("Have no enough money to short")
 			}
 		}
-		log.Warnf("Now price: %v, highf: %v, lowf: %v, LowestShark: %v, HighestShark: %v, LowestPrice: %v, HighestPrice: %v", pricef, highf, lowf, s.LowestShark, s.HighestShark, s.LowestPrice, s.HighestPrice)
+		log.Warnf("Now price: %v, highf: %v, lowf: %v, LowestShark: %v, HighestShark: %v, LowestPrice: %v, HighestPrice: %v, quoteQty: %v", pricef, highf, lowf, s.LowestShark, s.HighestShark, s.LowestPrice, s.HighestPrice, quoteQty)
 		exitCondition := s.trailingCheck(pricef, "short") || s.trailingCheck(pricef, "long")
 		if exitCondition {
 			log.Warnf("Close position %v, at %v", s.Position.GetBase(), price)

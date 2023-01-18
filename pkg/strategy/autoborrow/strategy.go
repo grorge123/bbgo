@@ -80,8 +80,8 @@ func (s *Strategy) tryToRepayAnyDebt(ctx context.Context) {
 		return
 	}
 
-	minMarginLevel := s.MinMarginLevel
-	curMarginLevel := account.MarginLevel
+	// minMarginLevel := s.MinMarginLevel
+	// curMarginLevel := account.MarginLevel
 
 	balances := account.Balances()
 	for _, b := range balances {
@@ -94,14 +94,14 @@ func (s *Strategy) tryToRepayAnyDebt(ctx context.Context) {
 		}
 
 		toRepay := fixedpoint.Min(b.Available, b.Debt())
-		bbgo.Notify(&MarginAction{
-			Exchange:       s.ExchangeSession.ExchangeName,
-			Action:         "Repay",
-			Asset:          b.Currency,
-			Amount:         toRepay,
-			MarginLevel:    curMarginLevel,
-			MinMarginLevel: minMarginLevel,
-		})
+		// bbgo.Notify(&MarginAction{
+		// 	Exchange:       s.ExchangeSession.ExchangeName,
+		// 	Action:         "Repay",
+		// 	Asset:          b.Currency,
+		// 	Amount:         toRepay,
+		// 	MarginLevel:    curMarginLevel,
+		// 	MinMarginLevel: minMarginLevel,
+		// })
 
 		log.Infof("repaying %f %s", toRepay.Float64(), b.Currency)
 		if err := s.marginBorrowRepay.RepayMarginAsset(context.Background(), b.Currency, toRepay); err != nil {
@@ -117,8 +117,8 @@ func (s *Strategy) reBalanceDebt(ctx context.Context) {
 		return
 	}
 
-	minMarginLevel := s.MinMarginLevel
-	curMarginLevel := account.MarginLevel
+	// minMarginLevel := s.MinMarginLevel
+	// curMarginLevel := account.MarginLevel
 
 	balances := account.Balances()
 	if len(balances) == 0 {
@@ -165,14 +165,14 @@ func (s *Strategy) reBalanceDebt(ctx context.Context) {
 			continue
 		}
 
-		bbgo.Notify(&MarginAction{
-			Exchange:       s.ExchangeSession.ExchangeName,
-			Action:         fmt.Sprintf("Repay for Debt Ratio %f", debtRatio.Float64()),
-			Asset:          b.Currency,
-			Amount:         toRepay,
-			MarginLevel:    curMarginLevel,
-			MinMarginLevel: minMarginLevel,
-		})
+		// bbgo.Notify(&MarginAction{
+		// 	Exchange:       s.ExchangeSession.ExchangeName,
+		// 	Action:         fmt.Sprintf("Repay for Debt Ratio %f", debtRatio.Float64()),
+		// 	Asset:          b.Currency,
+		// 	Amount:         toRepay,
+		// 	MarginLevel:    curMarginLevel,
+		// 	MinMarginLevel: minMarginLevel,
+		// })
 
 		if err := s.marginBorrowRepay.RepayMarginAsset(context.Background(), b.Currency, toRepay); err != nil {
 			log.WithError(err).Errorf("margin repay error")
@@ -206,12 +206,12 @@ func (s *Strategy) checkAndBorrow(ctx context.Context) {
 	// if margin ratio is too low, do not borrow
 	if curMarginLevel.Compare(minMarginLevel) < 0 {
 		log.Infof("current margin level %f < min margin level %f, skip autoborrow", curMarginLevel.Float64(), minMarginLevel.Float64())
-		bbgo.Notify("Warning!!! %s Current Margin Level %f < Minimal Margin Level %f",
-			s.ExchangeSession.Name,
-			curMarginLevel.Float64(),
-			minMarginLevel.Float64(),
-			account.Balances().Debts(),
-		)
+		// bbgo.Notify("Warning!!! %s Current Margin Level %f < Minimal Margin Level %f",
+		// 	s.ExchangeSession.Name,
+		// 	curMarginLevel.Float64(),
+		// 	minMarginLevel.Float64(),
+		// 	account.Balances().Debts(),
+		// )
 		s.tryToRepayAnyDebt(ctx)
 		return
 	}
@@ -261,14 +261,14 @@ func (s *Strategy) checkAndBorrow(ctx context.Context) {
 				continue
 			}
 
-			bbgo.Notify(&MarginAction{
-				Exchange:       s.ExchangeSession.ExchangeName,
-				Action:         "Borrow",
-				Asset:          marginAsset.Asset,
-				Amount:         toBorrow,
-				MarginLevel:    curMarginLevel,
-				MinMarginLevel: minMarginLevel,
-			})
+			// bbgo.Notify(&MarginAction{
+			// 	Exchange:       s.ExchangeSession.ExchangeName,
+			// 	Action:         "Borrow",
+			// 	Asset:          marginAsset.Asset,
+			// 	Amount:         toBorrow,
+			// 	MarginLevel:    curMarginLevel,
+			// 	MinMarginLevel: minMarginLevel,
+			// })
 			log.Infof("sending borrow request %f %s", toBorrow.Float64(), marginAsset.Asset)
 			if err := s.marginBorrowRepay.BorrowMarginAsset(ctx, marginAsset.Asset, toBorrow); err != nil {
 				log.WithError(err).Errorf("borrow error")
@@ -287,14 +287,14 @@ func (s *Strategy) checkAndBorrow(ctx context.Context) {
 				continue
 			}
 
-			bbgo.Notify(&MarginAction{
-				Exchange:       s.ExchangeSession.ExchangeName,
-				Action:         "Borrow",
-				Asset:          marginAsset.Asset,
-				Amount:         toBorrow,
-				MarginLevel:    curMarginLevel,
-				MinMarginLevel: minMarginLevel,
-			})
+			// bbgo.Notify(&MarginAction{
+			// 	Exchange:       s.ExchangeSession.ExchangeName,
+			// 	Action:         "Borrow",
+			// 	Asset:          marginAsset.Asset,
+			// 	Amount:         toBorrow,
+			// 	MarginLevel:    curMarginLevel,
+			// 	MinMarginLevel: minMarginLevel,
+			// })
 
 			log.Infof("sending borrow request %f %s", toBorrow.Float64(), marginAsset.Asset)
 			if err := s.marginBorrowRepay.BorrowMarginAsset(ctx, marginAsset.Asset, toBorrow); err != nil {
@@ -366,8 +366,8 @@ func (s *Strategy) handleBinanceBalanceUpdateEvent(event *binance.BalanceUpdateE
 		return
 	}
 
-	minMarginLevel := s.MinMarginLevel
-	curMarginLevel := account.MarginLevel
+	// minMarginLevel := s.MinMarginLevel
+	// curMarginLevel := account.MarginLevel
 
 	if b, ok := account.Balance(event.Asset); ok {
 		if b.Available.IsZero() || b.Borrowed.IsZero() {
@@ -379,14 +379,14 @@ func (s *Strategy) handleBinanceBalanceUpdateEvent(event *binance.BalanceUpdateE
 			return
 		}
 
-		bbgo.Notify(&MarginAction{
-			Exchange:       s.ExchangeSession.ExchangeName,
-			Action:         "Repay",
-			Asset:          b.Currency,
-			Amount:         toRepay,
-			MarginLevel:    curMarginLevel,
-			MinMarginLevel: minMarginLevel,
-		})
+		// bbgo.Notify(&MarginAction{
+		// 	Exchange:       s.ExchangeSession.ExchangeName,
+		// 	Action:         "Repay",
+		// 	Asset:          b.Currency,
+		// 	Amount:         toRepay,
+		// 	MarginLevel:    curMarginLevel,
+		// 	MinMarginLevel: minMarginLevel,
+		// })
 
 		if err := s.marginBorrowRepay.RepayMarginAsset(context.Background(), event.Asset, toRepay); err != nil {
 			log.WithError(err).Errorf("margin repay error")
