@@ -58,6 +58,7 @@ type Strategy struct {
 	HighFilter              float64          `json:"highFilter"`
 	Leverage                fixedpoint.Value `json:"leverage"`
 	StopLoss                fixedpoint.Value `json:"stoploss"`
+	MaxExposurePosition     fixedpoint.Value `json:"maxExposurePosition"`
 	TrailingCallbackRate    []float64        `json:"trailingCallbackRate" modifiable:"true"`
 	TrailingActivationRatio []float64        `json:"trailingActivationRatio" modifiable:"true"`
 
@@ -534,7 +535,7 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		pricef := price.Float64()
 		lowf := math.Min(kline.Low.Float64(), pricef)
 		highf := math.Max(kline.High.Float64(), pricef)
-
+		base := s.Position.GetBase()
 		log.Infof("Shark Score: %f, Current Price: %f Caculate Shark: %v", s.shark.Last(), kline.Close.Float64(), s.shark.Rank(s.Window).Last()/float64(s.Window))
 
 		// previousRegime := s.shark.Values.Tail(10).Mean()
@@ -556,9 +557,14 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close short position")
 				s.LowestShark = 0
 			} else {
-				available := s.calculateAvailable(ctx, price, types.SideTypeBuy)
-				// log.Warnf("Long available: %v", available)
-				if available.Compare(s.Quantity) >= 0 {
+				canBuy := true
+				if s.MaxExposurePosition.Sign() > 0 {
+					if base.Compare(s.MaxExposurePosition) > 0 {
+						canBuy = false
+						log.Warnf("Have no enough money to Buy, base: %v maxExplose: %v", base, s.MaxExposurePosition)
+					}
+				}
+				if canBuy {
 					log.Warnf("long at %v, position %v, IsShort %t", price, s.Position.GetBase(), s.Position.IsShort())
 					_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 						Symbol:           s.Symbol,
@@ -588,8 +594,6 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					if err != nil {
 						log.Errorln(err)
 					}
-				} else {
-					log.Warnf("Have no enough money to Buy")
 				}
 			}
 
@@ -602,9 +606,14 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 				s.orderExecutor.ClosePosition(ctx, fixedpoint.One, "close long position")
 				s.HighestShark = 0
 			} else {
-				available := s.calculateAvailable(ctx, price, types.SideTypeSell)
-				// log.Warnf("Short available: %v", available)
-				if available.Compare(s.Quantity) >= 0 {
+				canSell := true
+				if s.MaxExposurePosition.Sign() > 0 {
+					if base.Compare(s.MaxExposurePosition.Neg()) < 0 {
+						canSell = false
+						log.Warnf("Have no enough money to short. base: %v maxExplose: %v", base, s.MaxExposurePosition)
+					}
+				}
+				if canSell {
 					log.Warnf("Short at %v, position %v, IsLong %t", price, s.Position.GetBase(), s.Position.IsLong())
 					_, err := s.orderExecutor.SubmitOrders(ctx, types.SubmitOrder{
 						Symbol:           s.Symbol,
@@ -634,8 +643,6 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 					if err != nil {
 						log.Errorln(err)
 					}
-				} else {
-					log.Warnf("Have no enough money to short")
 				}
 			}
 		}
