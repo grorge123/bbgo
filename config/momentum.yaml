@@ -1,0 +1,40 @@
+persistence:
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    db: 0
+
+sessions:
+  binance:
+    exchange: binance
+    envVarPrefix: binance
+
+backtest:
+  startTime: "2022-02-01"
+  endTime: "2023-02-19"
+  sessions:
+    - binance
+  symbols:
+    - ETHUSDT
+  accounts:
+    binance:
+      balances:
+        ETH: 1.0
+        USDT: 4000
+
+exchangeStrategies:
+- on: binance
+  momentum:
+    symbol: ETHUSDT
+    interval: "5m"
+    window: 10
+    quantity: 0.1
+    sma:
+      interval: "5m"
+      window: 10
+    ema:
+      interval: "5m"
+      window: 10
+    rsi:
+      interval: "5m"
+      window: 14
