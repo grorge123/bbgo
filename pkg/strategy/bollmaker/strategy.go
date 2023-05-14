@@ -82,7 +82,10 @@ type Strategy struct {
 	// For short position, you will only place buy order below the price (= average cost * (1 - minProfitSpread))
 	MinProfitSpread fixedpoint.Value `json:"minProfitSpread"`
 
-	// UseTickerPrice use the ticker api to get the mid price instead of the closed kline price.
+	// MinProfitActivationRate activates MinProfitSpread when position RoI higher than the specified percentage
+	MinProfitActivationRate *fixedpoint.Value `json:"minProfitActivationRate"`
+
+	// UseTickerPrice use the ticker api to get the mid-price instead of the closed kline price.
 	// The back-test engine is kline-based, so the ticker price api is not supported.
 	// Turn this on if you want to do real trading.
 	UseTickerPrice bool `json:"useTickerPrice"`
@@ -333,7 +336,7 @@ func (s *Strategy) placeOrders(ctx context.Context, midPrice fixedpoint.Value, k
 
 	// Apply quantity skew
 	// CASE #1:
-	// WHEN: price is in the neutral bollginer band (window 1) == neutral
+	// WHEN: price is in the neutral bollinger band (window 1) == neutral
 	// THEN: we don't apply skew
 	// CASE #2:
 	// WHEN: price is in the upper band (window 2 > price > window 1) == upTrend
@@ -381,22 +384,25 @@ func (s *Strategy) placeOrders(ctx context.Context, midPrice fixedpoint.Value, k
 
 	isLongPosition := s.Position.IsLong()
 	isShortPosition := s.Position.IsShort()
-	minProfitPrice := s.Position.AverageCost.Mul(fixedpoint.One.Add(s.MinProfitSpread))
-	if isShortPosition {
-		minProfitPrice = s.Position.AverageCost.Mul(fixedpoint.One.Sub(s.MinProfitSpread))
-	}
 
-	if isLongPosition {
-		// for long position if the current price is lower than the minimal profitable price then we should stop sell
-		// this avoid loss trade
-		if midPrice.Compare(minProfitPrice) < 0 {
-			canSell = false
+	if s.MinProfitActivationRate == nil || (s.MinProfitActivationRate != nil && s.Position.ROI(midPrice).Compare(*s.MinProfitActivationRate) >= 0) {
+		minProfitPrice := s.Position.AverageCost.Mul(fixedpoint.One.Add(s.MinProfitSpread))
+		if isShortPosition {
+			minProfitPrice = s.Position.AverageCost.Mul(fixedpoint.One.Sub(s.MinProfitSpread))
 		}
-	} else if isShortPosition {
-		// for short position if the current price is higher than the minimal profitable price then we should stop buy
-		// this avoid loss trade
-		if midPrice.Compare(minProfitPrice) > 0 {
-			canBuy = false
+
+		if isLongPosition {
+			// for long position if the current price is lower than the minimal profitable price then we should stop sell
+			// this avoids loss trade
+			if midPrice.Compare(minProfitPrice) < 0 {
+				canSell = false
+			}
+		} else if isShortPosition {
+			// for short position if the current price is higher than the minimal profitable price then we should stop buy
+			// this avoids loss trade
+			if midPrice.Compare(minProfitPrice) > 0 {
+				canBuy = false
+			}
 		}
 	}
 
@@ -438,7 +444,10 @@ func (s *Strategy) placeOrders(ctx context.Context, midPrice fixedpoint.Value, k
 		submitOrders[i] = adjustOrderQuantity(submitOrders[i], s.Market)
 	}
 
-	_, _ = s.orderExecutor.SubmitOrders(ctx, submitOrders...)
+	_, err = s.orderExecutor.SubmitOrders(ctx, submitOrders...)
+	if err != nil {
+		log.WithError(err).Errorf("submit order error")
+	}
 }
 
 func (s *Strategy) hasLongSet() bool {

@@ -3,14 +3,25 @@ package bbgo
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/multierr"
 
 	"github.com/c9s/bbgo/pkg/fixedpoint"
 	"github.com/c9s/bbgo/pkg/types"
+	"github.com/c9s/bbgo/pkg/util"
 )
+
+var DefaultSubmitOrderRetryTimeout = 5 * time.Minute
+
+func init() {
+	if du, ok := util.GetEnvVarDuration("BBGO_SUBMIT_ORDER_RETRY_TIMEOUT"); ok && du > 0 {
+		DefaultSubmitOrderRetryTimeout = du
+	}
+}
 
 type OrderExecutor interface {
 	SubmitOrders(ctx context.Context, orders ...types.SubmitOrder) (createdOrders types.OrderSlice, err error)
@@ -43,42 +54,8 @@ func (e *ExchangeOrderExecutionRouter) SubmitOrdersTo(ctx context.Context, sessi
 		return nil, err
 	}
 
-	createdOrders, _, err := BatchPlaceOrder(ctx, es.Exchange, formattedOrders...)
+	createdOrders, _, err := BatchPlaceOrder(ctx, es.Exchange, nil, formattedOrders...)
 	return createdOrders, err
-}
-
-func BatchRetryPlaceOrder(ctx context.Context, exchange types.Exchange, errIdx []int, submitOrders ...types.SubmitOrder) (types.OrderSlice, error) {
-	var createdOrders types.OrderSlice
-	var err error
-	for _, idx := range errIdx {
-		createdOrder, err2 := exchange.SubmitOrder(ctx, submitOrders[idx])
-		if err2 != nil {
-			err = multierr.Append(err, err2)
-		} else if createdOrder != nil {
-			createdOrders = append(createdOrders, *createdOrder)
-		}
-	}
-
-	return createdOrders, err
-}
-
-// BatchPlaceOrder
-func BatchPlaceOrder(ctx context.Context, exchange types.Exchange, submitOrders ...types.SubmitOrder) (types.OrderSlice, []int, error) {
-	var createdOrders types.OrderSlice
-	var err error
-	var errIndexes []int
-	for i, submitOrder := range submitOrders {
-		createdOrder, err2 := exchange.SubmitOrder(ctx, submitOrder)
-		if err2 != nil {
-			err = multierr.Append(err, err2)
-			errIndexes = append(errIndexes, i)
-		} else if createdOrder != nil {
-			createdOrder.Tag = submitOrder.Tag
-			createdOrders = append(createdOrders, *createdOrder)
-		}
-	}
-
-	return createdOrders, errIndexes, err
 }
 
 func (e *ExchangeOrderExecutionRouter) CancelOrdersTo(ctx context.Context, session string, orders ...types.Order) error {
@@ -117,7 +94,7 @@ func (e *ExchangeOrderExecutor) SubmitOrders(ctx context.Context, orders ...type
 		log.Infof("submitting order: %s", order.String())
 	}
 
-	createdOrders, _, err := BatchPlaceOrder(ctx, e.Session.Exchange, formattedOrders...)
+	createdOrders, _, err := BatchPlaceOrder(ctx, e.Session.Exchange, nil, formattedOrders...)
 	return createdOrders, err
 }
 
@@ -320,9 +297,113 @@ func (c *BasicRiskController) ProcessOrders(session *ExchangeSession, orders ...
 	return outOrders, nil
 }
 
-func max(a, b int64) int64 {
-	if a > b {
-		return a
+type OrderCallback func(order types.Order)
+
+// BatchPlaceOrder
+func BatchPlaceOrder(ctx context.Context, exchange types.Exchange, orderCallback OrderCallback, submitOrders ...types.SubmitOrder) (types.OrderSlice, []int, error) {
+	var createdOrders types.OrderSlice
+	var err error
+
+	var errIndexes []int
+	for i, submitOrder := range submitOrders {
+		createdOrder, err2 := exchange.SubmitOrder(ctx, submitOrder)
+		if err2 != nil {
+			err = multierr.Append(err, err2)
+			errIndexes = append(errIndexes, i)
+		} else if createdOrder != nil {
+			createdOrder.Tag = submitOrder.Tag
+
+			if orderCallback != nil {
+				orderCallback(*createdOrder)
+			}
+
+			createdOrders = append(createdOrders, *createdOrder)
+		}
 	}
-	return b
+
+	return createdOrders, errIndexes, err
+}
+
+// BatchRetryPlaceOrder places the orders and retries the failed orders
+func BatchRetryPlaceOrder(ctx context.Context, exchange types.Exchange, errIdx []int, orderCallback OrderCallback, logger log.FieldLogger, submitOrders ...types.SubmitOrder) (types.OrderSlice, []int, error) {
+	if logger == nil {
+		logger = log.StandardLogger()
+	}
+
+	var createdOrders types.OrderSlice
+	var werr error
+
+	// if the errIdx is nil, then we should iterate all the submit orders
+	// allocate a variable for new error index
+	if len(errIdx) == 0 {
+		var err2 error
+		createdOrders, errIdx, err2 = BatchPlaceOrder(ctx, exchange, orderCallback, submitOrders...)
+		if err2 != nil {
+			werr = multierr.Append(werr, err2)
+		}
+	}
+
+	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, DefaultSubmitOrderRetryTimeout)
+	defer cancelTimeout()
+
+	// if we got any error, we should re-iterate the errored orders
+	coolDownTime := 200 * time.Millisecond
+
+	// set backoff max retries to 101 because https://ja.wikipedia.org/wiki/101%E5%9B%9E%E7%9B%AE%E3%81%AE%E3%83%97%E3%83%AD%E3%83%9D%E3%83%BC%E3%82%BA
+	backoffMaxRetries := uint64(101)
+	var errIdxNext []int
+batchRetryOrder:
+	for retryRound := 0; len(errIdx) > 0 && retryRound < 10; retryRound++ {
+		// sleep for 200 millisecond between each retry
+		logger.Warnf("retry round #%d, cooling down for %s", retryRound+1, coolDownTime)
+		time.Sleep(coolDownTime)
+
+		// reset error index since it's a new retry
+		errIdxNext = nil
+
+		// iterate the error index and re-submit the order
+		logger.Warnf("starting retry round #%d...", retryRound+1)
+		for _, idx := range errIdx {
+			submitOrder := submitOrders[idx]
+
+			op := func() error {
+				// can allocate permanent error backoff.Permanent(err) to stop backoff
+				createdOrder, err2 := exchange.SubmitOrder(timeoutCtx, submitOrder)
+				if err2 != nil {
+					logger.WithError(err2).Errorf("submit order error: %s", submitOrder.String())
+				}
+
+				if err2 == nil && createdOrder != nil {
+					// if the order is successfully created, then we should copy the order tag
+					createdOrder.Tag = submitOrder.Tag
+
+					if orderCallback != nil {
+						orderCallback(*createdOrder)
+					}
+
+					createdOrders = append(createdOrders, *createdOrder)
+				}
+
+				return err2
+			}
+
+			var bo backoff.BackOff = backoff.NewExponentialBackOff()
+			bo = backoff.WithMaxRetries(bo, backoffMaxRetries)
+			bo = backoff.WithContext(bo, timeoutCtx)
+			if err2 := backoff.Retry(op, bo); err2 != nil {
+				if err2 == context.Canceled {
+					logger.Warnf("context canceled error, stop retry")
+					break batchRetryOrder
+				}
+
+				werr = multierr.Append(werr, err2)
+				errIdxNext = append(errIdxNext, idx)
+			}
+		}
+
+		// update the error index
+		errIdx = errIdxNext
+	}
+
+	return createdOrders, errIdx, werr
 }

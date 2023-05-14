@@ -73,9 +73,10 @@ func (q *AsyncTimeRangedBatchQuery) Query(ctx context.Context, ch interface{}, s
 			if listLen == 0 {
 				if q.JumpIfEmpty > 0 {
 					startTime = startTime.Add(q.JumpIfEmpty)
-
-					log.Debugf("batch querying %T: empty records jump to %s", q.Type, startTime)
-					continue
+					if startTime.Before(endTime) {
+						log.Debugf("batch querying %T: empty records jump to %s", q.Type, startTime)
+						continue
+					}
 				}
 
 				log.Debugf("batch querying %T: empty records, query is completed", q.Type)

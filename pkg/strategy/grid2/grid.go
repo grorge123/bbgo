@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/c9s/bbgo/pkg/fixedpoint"
+	"github.com/c9s/bbgo/pkg/types"
 )
 
 type PinCalculator func() []Pin
@@ -35,14 +37,22 @@ type Pin fixedpoint.Value
 
 func calculateArithmeticPins(lower, upper, spread, tickSize fixedpoint.Value) []Pin {
 	var pins []Pin
+
+	// tickSize number is like 0.01, 0.1, 0.001
 	var ts = tickSize.Float64()
-	for p := lower; p.Compare(upper) <= 0; p = p.Add(spread) {
-		// tickSize here = 0.01
-		pp := p.Float64() / ts
-		pp = math.Trunc(pp) * ts
-		pin := Pin(fixedpoint.NewFromFloat(pp))
-		pins = append(pins, pin)
+	var prec = int(math.Round(math.Log10(ts) * -1.0))
+	var pow10 = math.Pow10(prec)
+	for p := lower; p.Compare(upper.Sub(spread)) <= 0; p = p.Add(spread) {
+		pp := math.Round(p.Float64()*pow10*10.0) / 10.0
+		pp = math.Trunc(pp) / pow10
+
+		pps := strconv.FormatFloat(pp, 'f', prec, 64)
+		price := fixedpoint.MustNewFromString(pps)
+		pins = append(pins, Pin(price))
 	}
+
+	// this makes sure there is no error at the upper price
+	pins = append(pins, Pin(upper))
 
 	return pins
 }
@@ -134,6 +144,30 @@ func (g *Grid) NextLowerPin(price fixedpoint.Value) (Pin, bool) {
 	return Pin(fixedpoint.Zero), false
 }
 
+func (g *Grid) FilterOrders(orders []types.Order) (ret []types.Order) {
+	for _, o := range orders {
+		if !g.HasPrice(o.Price) {
+			continue
+		}
+
+		ret = append(ret, o)
+	}
+
+	return ret
+}
+
+func (g *Grid) HasPrice(price fixedpoint.Value) bool {
+	if _, exists := g.pinsCache[Pin(price)]; exists {
+		return exists
+	}
+
+	i := g.SearchPin(price)
+	if i >= 0 && i < len(g.Pins) {
+		return fixedpoint.Value(g.Pins[i]).Compare(price) == 0
+	}
+	return false
+}
+
 func (g *Grid) SearchPin(price fixedpoint.Value) int {
 	i := sort.Search(len(g.Pins), func(i int) bool {
 		a := fixedpoint.Value(g.Pins[i])
@@ -192,5 +226,5 @@ func (g *Grid) updatePinsCache() {
 }
 
 func (g *Grid) String() string {
-	return fmt.Sprintf("GRID: priceRange: %f <=> %f size: %f spread: %f", g.LowerPrice.Float64(), g.UpperPrice.Float64(), g.Size.Float64(), g.Spread.Float64())
+	return fmt.Sprintf("GRID: priceRange: %f <=> %f size: %f spread: %f tickSize: %f", g.LowerPrice.Float64(), g.UpperPrice.Float64(), g.Size.Float64(), g.Spread.Float64(), g.TickSize.Float64())
 }

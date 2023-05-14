@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/c9s/bbgo/pkg/util"
+	"github.com/c9s/bbgo/pkg/util/backoff"
 	"github.com/c9s/bbgo/pkg/version"
 )
 
@@ -36,6 +38,8 @@ const (
 
 	// 2018-09-01 08:00:00 +0800 CST
 	TimestampSince = 1535760000
+
+	maxAllowedNegativeTimeOffset = -20
 )
 
 var httpTransportMaxIdleConnsPerHost = http.DefaultMaxIdleConnsPerHost
@@ -68,14 +72,16 @@ var htmlTagPattern = regexp.MustCompile("<[/]?[a-zA-Z-]+.*?>")
 
 // The following variables are used for nonce.
 
-// timeOffset is used for nonce
-var timeOffset int64 = 0
+// globalTimeOffset is used for nonce
+var globalTimeOffset int64 = 0
 
-// serverTimestamp is used for storing the server timestamp, default to Now
-var serverTimestamp = time.Now().Unix()
+// globalServerTimestamp is used for storing the server timestamp, default to Now
+var globalServerTimestamp = time.Now().Unix()
 
 // reqCount is used for nonce, this variable counts the API request count.
-var reqCount int64 = 1
+var reqCount uint64 = 1
+
+var nonceOnce sync.Once
 
 // create an isolated http httpTransport rather than the default one
 var httpTransport = &http.Transport{
@@ -147,24 +153,55 @@ func (c *RestClient) Auth(key string, secret string) *RestClient {
 	return c
 }
 
-func (c *RestClient) initNonce() {
-	var clientTime = time.Now()
-	var err error
-	serverTimestamp, err = c.PublicService.Timestamp()
-	if err != nil {
-		logger.WithError(err).Panic("failed to sync timestamp with max")
+func (c *RestClient) queryAndUpdateServerTimestamp(ctx context.Context) {
+	op := func() error {
+		serverTs, err := c.PublicService.Timestamp(ctx)
+		if err != nil {
+			return err
+		}
+
+		if serverTs == 0 {
+			return errors.New("unexpected zero server timestamp")
+		}
+
+		clientTime := time.Now()
+		offset := serverTs - clientTime.Unix()
+
+		if offset < 0 {
+			// avoid updating a negative offset: server time is before the local time
+			if offset > maxAllowedNegativeTimeOffset {
+				return nil
+			}
+
+			// if the offset is greater than 15 seconds, we should restart
+			logger.Panicf("max exchange server timestamp offset %d is less than the negative offset %d", offset, maxAllowedNegativeTimeOffset)
+		}
+
+		atomic.StoreInt64(&globalServerTimestamp, serverTs)
+		atomic.StoreInt64(&globalTimeOffset, offset)
+
+		logger.Debugf("loaded max server timestamp: %d offset=%d", globalServerTimestamp, offset)
+		return nil
 	}
 
-	timeOffset = serverTimestamp - clientTime.Unix()
-	logger.Infof("loaded max server timestamp: %d offset=%d", serverTimestamp, timeOffset)
+	if err := backoff.RetryGeneral(ctx, op); err != nil {
+		logger.WithError(err).Error("unable to sync timestamp with max")
+	}
+}
+
+func (c *RestClient) initNonce() {
+	nonceOnce.Do(func() {
+		go c.queryAndUpdateServerTimestamp(context.Background())
+	})
 }
 
 func (c *RestClient) getNonce() int64 {
 	// nonce 是以正整數表示的時間戳記，代表了從 Unix epoch 到當前時間所經過的毫秒數(ms)。
 	// nonce 與伺服器的時間差不得超過正負30秒，每個 nonce 只能使用一次。
 	var seconds = time.Now().Unix()
-	var rc = atomic.AddInt64(&reqCount, 1)
-	return (seconds+timeOffset)*1000 - 1 + int64(math.Mod(float64(rc), 1000.0))
+	var rc = atomic.AddUint64(&reqCount, 1)
+	var offset = atomic.LoadInt64(&globalTimeOffset)
+	return (seconds+offset)*1000 - 1 + int64(math.Mod(float64(rc), 1000.0))
 }
 
 func (c *RestClient) NewAuthenticatedRequest(ctx context.Context, m string, refURL string, params url.Values, payload interface{}) (*http.Request, error) {

@@ -36,8 +36,11 @@ type GeneralOrderExecutor struct {
 	orderStore         *OrderStore
 	tradeCollector     *TradeCollector
 
+	logger log.FieldLogger
+
 	marginBaseMaxBorrowable, marginQuoteMaxBorrowable fixedpoint.Value
 
+	maxRetries    uint
 	disableNotify bool
 	closing       int64
 }
@@ -69,6 +72,10 @@ func NewGeneralOrderExecutor(session *ExchangeSession, symbol, strategy, strateg
 
 func (e *GeneralOrderExecutor) DisableNotify() {
 	e.disableNotify = true
+}
+
+func (e *GeneralOrderExecutor) SetMaxRetries(maxRetries uint) {
+	e.maxRetries = maxRetries
 }
 
 func (e *GeneralOrderExecutor) startMarginAssetUpdater(ctx context.Context) {
@@ -148,8 +155,10 @@ func (e *GeneralOrderExecutor) BindProfitStats(profitStats *types.ProfitStats) {
 
 		profitStats.AddProfit(*profit)
 
-		Notify(profit)
-		Notify(profitStats)
+		if !e.disableNotify {
+			Notify(profit)
+			Notify(profitStats)
+		}
 	})
 }
 
@@ -192,10 +201,12 @@ func (e *GeneralOrderExecutor) FastSubmitOrders(ctx context.Context, submitOrder
 	if err != nil {
 		return nil, err
 	}
-	createdOrders, errIdx, err := BatchPlaceOrder(ctx, e.session.Exchange, formattedOrders...)
+
+	createdOrders, errIdx, err := BatchPlaceOrder(ctx, e.session.Exchange, nil, formattedOrders...)
 	if len(errIdx) > 0 {
 		return nil, err
 	}
+
 	if IsBackTesting {
 		e.orderStore.Add(createdOrders...)
 		e.activeMakerOrders.Add(createdOrders...)
@@ -211,29 +222,28 @@ func (e *GeneralOrderExecutor) FastSubmitOrders(ctx context.Context, submitOrder
 
 }
 
+func (e *GeneralOrderExecutor) SetLogger(logger log.FieldLogger) {
+	e.logger = logger
+}
+
 func (e *GeneralOrderExecutor) SubmitOrders(ctx context.Context, submitOrders ...types.SubmitOrder) (types.OrderSlice, error) {
 	formattedOrders, err := e.session.FormatOrders(submitOrders)
 	if err != nil {
 		return nil, err
 	}
 
-	createdOrders, errIdx, err := BatchPlaceOrder(ctx, e.session.Exchange, formattedOrders...)
-	if err != nil {
-		log.WithError(err).Errorf("place order error, will retry orders: %v", errIdx)
+	orderCreateCallback := func(createdOrder types.Order) {
+		e.orderStore.Add(createdOrder)
+		e.activeMakerOrders.Add(createdOrder)
+		e.tradeCollector.Process()
 	}
 
-	if len(errIdx) > 0 {
-		createdOrders2, err2 := BatchRetryPlaceOrder(ctx, e.session.Exchange, errIdx, formattedOrders...)
-		if err2 != nil {
-			err = multierr.Append(err, err2)
-		} else {
-			createdOrders = append(createdOrders, createdOrders2...)
-		}
+	if e.maxRetries == 0 {
+		createdOrders, _, err := BatchPlaceOrder(ctx, e.session.Exchange, orderCreateCallback, formattedOrders...)
+		return createdOrders, err
 	}
 
-	e.orderStore.Add(createdOrders...)
-	e.activeMakerOrders.Add(createdOrders...)
-	e.tradeCollector.Process()
+	createdOrders, _, err := BatchRetryPlaceOrder(ctx, e.session.Exchange, nil, orderCreateCallback, e.logger, formattedOrders...)
 	return createdOrders, err
 }
 
@@ -490,18 +500,15 @@ func (e *GeneralOrderExecutor) ClosePosition(ctx context.Context, percentage fix
 	if e.session.Futures { // Futures: Use base qty in e.position
 		submitOrder.Quantity = e.position.GetBase().Abs()
 		submitOrder.ReduceOnly = true
+
 		if e.position.IsLong() {
 			submitOrder.Side = types.SideTypeSell
 		} else if e.position.IsShort() {
 			submitOrder.Side = types.SideTypeBuy
 		} else {
-			submitOrder.Side = types.SideTypeSelf
-			submitOrder.Quantity = fixedpoint.Zero
+			return fmt.Errorf("unexpected position side: %+v", e.position)
 		}
 
-		if submitOrder.Quantity.IsZero() {
-			return fmt.Errorf("no position to close: %+v", submitOrder)
-		}
 	} else { // Spot and spot margin
 		// check base balance and adjust the close position order
 		if e.position.IsLong() {
@@ -525,7 +532,7 @@ func (e *GeneralOrderExecutor) ClosePosition(ctx context.Context, percentage fix
 	tagStr := strings.Join(tags, ",")
 	submitOrder.Tag = tagStr
 
-	Notify("Closing %s position %s with tags: %v", e.symbol, percentage.Percentage(), tagStr)
+	Notify("Closing %s position %s with tags: %s", e.symbol, percentage.Percentage(), tagStr)
 
 	_, err := e.SubmitOrders(ctx, *submitOrder)
 	return err

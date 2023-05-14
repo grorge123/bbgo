@@ -88,6 +88,8 @@ type Trader struct {
 	crossExchangeStrategies []CrossExchangeStrategy
 	exchangeStrategies      map[string][]SingleExchangeStrategy
 
+	// gracefulShutdown is used for registering strategy's Shutdown calls
+	// when strategy implements Shutdown(ctx), the func ref will be stored in the callback.
 	gracefulShutdown GracefulShutdown
 
 	logger Logger
@@ -231,7 +233,7 @@ func (trader *Trader) injectFieldsAndSubscribe(ctx context.Context) error {
 				return errors.New("strategy object is not a struct")
 			}
 
-			if err := trader.injectCommonServices(strategy); err != nil {
+			if err := trader.injectCommonServices(ctx, strategy); err != nil {
 				return err
 			}
 
@@ -301,7 +303,7 @@ func (trader *Trader) injectFieldsAndSubscribe(ctx context.Context) error {
 			continue
 		}
 
-		if err := trader.injectCommonServices(strategy); err != nil {
+		if err := trader.injectCommonServices(ctx, strategy); err != nil {
 			return err
 		}
 
@@ -363,16 +365,14 @@ func (trader *Trader) Run(ctx context.Context) error {
 	return trader.environment.Connect(ctx)
 }
 
-func (trader *Trader) LoadState() error {
+func (trader *Trader) LoadState(ctx context.Context) error {
 	if trader.environment.BacktestService != nil {
 		return nil
 	}
 
-	if persistenceServiceFacade == nil {
-		return nil
-	}
+	isolation := GetIsolationFromContext(ctx)
 
-	ps := persistenceServiceFacade.Get()
+	ps := isolation.persistenceServiceFacade.Get()
 
 	log.Infof("loading strategies states...")
 
@@ -400,18 +400,17 @@ func (trader *Trader) IterateStrategies(f func(st StrategyID) error) error {
 	return nil
 }
 
-func (trader *Trader) SaveState() error {
+// NOTICE: the ctx here is the trading context, which could already be canceled.
+func (trader *Trader) SaveState(ctx context.Context) error {
 	if trader.environment.BacktestService != nil {
 		return nil
 	}
 
-	if persistenceServiceFacade == nil {
-		return nil
-	}
+	isolation := GetIsolationFromContext(ctx)
 
-	ps := persistenceServiceFacade.Get()
+	ps := isolation.persistenceServiceFacade.Get()
 
-	log.Infof("saving strategies states...")
+	log.Debugf("saving strategy persistence states...")
 	return trader.IterateStrategies(func(strategy StrategyID) error {
 		id := dynamic.CallID(strategy)
 		if len(id) == 0 {
@@ -426,7 +425,11 @@ func (trader *Trader) Shutdown(ctx context.Context) {
 	trader.gracefulShutdown.Shutdown(ctx)
 }
 
-func (trader *Trader) injectCommonServices(s interface{}) error {
+func (trader *Trader) injectCommonServices(ctx context.Context, s interface{}) error {
+	isolation := GetIsolationFromContext(ctx)
+
+	ps := isolation.persistenceServiceFacade
+
 	// a special injection for persistence selector:
 	// if user defined the selector, the facade pointer will be nil, hence we need to update the persistence facade pointer
 	sv := reflect.ValueOf(s).Elem()
@@ -438,7 +441,7 @@ func (trader *Trader) injectCommonServices(s interface{}) error {
 				return fmt.Errorf("field Persistence is not a struct element, %s given", field)
 			}
 
-			if err := dynamic.InjectField(elem, "Facade", persistenceServiceFacade, true); err != nil {
+			if err := dynamic.InjectField(elem, "Facade", ps, true); err != nil {
 				return err
 			}
 
@@ -458,6 +461,6 @@ func (trader *Trader) injectCommonServices(s interface{}) error {
 		trader.environment.DatabaseService,
 		trader.environment.AccountService,
 		trader.environment,
-		persistenceServiceFacade, // if the strategy use persistence facade separately
+		ps, // if the strategy use persistence facade separately
 	)
 }

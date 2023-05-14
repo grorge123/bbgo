@@ -14,8 +14,12 @@ func BootstrapEnvironmentLightweight(ctx context.Context, environ *Environment, 
 		return errors.Wrap(err, "exchange session configure error")
 	}
 
+	if userConfig.Logging != nil {
+		environ.SetLogging(userConfig.Logging)
+	}
+
 	if userConfig.Persistence != nil {
-		if err := ConfigurePersistence(ctx, userConfig.Persistence); err != nil {
+		if err := ConfigurePersistence(ctx, environ, userConfig.Persistence); err != nil {
 			return errors.Wrap(err, "persistence configure error")
 		}
 	}
@@ -32,13 +36,17 @@ func BootstrapEnvironment(ctx context.Context, environ *Environment, userConfig 
 		return errors.Wrap(err, "exchange session configure error")
 	}
 
+	if userConfig.Logging != nil {
+		environ.SetLogging(userConfig.Logging)
+	}
+
 	if userConfig.Persistence != nil {
-		if err := ConfigurePersistence(ctx, userConfig.Persistence); err != nil {
+		if err := ConfigurePersistence(ctx, environ, userConfig.Persistence); err != nil {
 			return errors.Wrap(err, "persistence configure error")
 		}
 	}
 
-	if err := environ.ConfigureNotificationSystem(userConfig); err != nil {
+	if err := environ.ConfigureNotificationSystem(ctx, userConfig); err != nil {
 		return errors.Wrap(err, "notification configure error")
 	}
 

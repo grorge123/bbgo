@@ -78,18 +78,19 @@ const (
 
 // Environment presents the real exchange data layer
 type Environment struct {
-	DatabaseService *service.DatabaseService
-	OrderService    *service.OrderService
-	TradeService    *service.TradeService
-	ProfitService   *service.ProfitService
-	PositionService *service.PositionService
-	BacktestService *service.BacktestService
-	RewardService   *service.RewardService
-	MarginService   *service.MarginService
-	SyncService     *service.SyncService
-	AccountService  *service.AccountService
-	WithdrawService *service.WithdrawService
-	DepositService  *service.DepositService
+	DatabaseService   *service.DatabaseService
+	OrderService      *service.OrderService
+	TradeService      *service.TradeService
+	ProfitService     *service.ProfitService
+	PositionService   *service.PositionService
+	BacktestService   *service.BacktestService
+	RewardService     *service.RewardService
+	MarginService     *service.MarginService
+	SyncService       *service.SyncService
+	AccountService    *service.AccountService
+	WithdrawService   *service.WithdrawService
+	DepositService    *service.DepositService
+	PersistentService *service.PersistenceServiceFacade
 
 	// startTime is the time of start point (which is used in the backtest)
 	startTime time.Time
@@ -101,6 +102,8 @@ type Environment struct {
 	syncStatusMutex sync.Mutex
 	syncStatus      SyncStatus
 	syncConfig      *SyncConfig
+
+	loggingConfig *LoggingConfig
 
 	sessions map[string]*ExchangeSession
 }
@@ -125,6 +128,10 @@ func (environ *Environment) Session(name string) (*ExchangeSession, bool) {
 
 func (environ *Environment) Sessions() map[string]*ExchangeSession {
 	return environ.sessions
+}
+
+func (environ *Environment) SetLogging(config *LoggingConfig) {
+	environ.loggingConfig = config
 }
 
 func (environ *Environment) SelectSessions(names ...string) map[string]*ExchangeSession {
@@ -598,13 +605,14 @@ func (environ *Environment) syncSession(ctx context.Context, session *ExchangeSe
 	return environ.SyncService.SyncSessionSymbols(ctx, session.Exchange, environ.syncStartTime, symbols...)
 }
 
-func (environ *Environment) ConfigureNotificationSystem(userConfig *Config) error {
+func (environ *Environment) ConfigureNotificationSystem(ctx context.Context, userConfig *Config) error {
 	// setup default notification config
 	if userConfig.Notifications == nil {
 		userConfig.Notifications = &NotificationConfig{}
 	}
 
-	var persistence = persistenceServiceFacade.Get()
+	var isolation = GetIsolationFromContext(ctx)
+	var persistence = isolation.persistenceServiceFacade.Get()
 
 	err := environ.setupInteraction(persistence)
 	if err != nil {

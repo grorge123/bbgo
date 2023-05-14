@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"reflect"
+	"sync"
 
 	"github.com/codingconcepts/env"
 	"github.com/pkg/errors"
@@ -17,8 +18,6 @@ var defaultPersistenceServiceFacade = &service.PersistenceServiceFacade{
 	Memory: service.NewMemoryService(),
 }
 
-var persistenceServiceFacade = defaultPersistenceServiceFacade
-
 // Sync syncs the object properties into the persistence layer
 func Sync(ctx context.Context, obj interface{}) {
 	id := dynamic.CallID(obj)
@@ -30,6 +29,13 @@ func Sync(ctx context.Context, obj interface{}) {
 	isolation := GetIsolationFromContext(ctx)
 
 	ps := isolation.persistenceServiceFacade.Get()
+
+	locker, ok := obj.(sync.Locker)
+	if ok {
+		locker.Lock()
+		defer locker.Unlock()
+	}
+
 	err := storePersistenceFields(obj, id, ps)
 	if err != nil {
 		log.WithError(err).Errorf("persistence sync failed")
@@ -102,7 +108,7 @@ func NewPersistenceServiceFacade(conf *PersistenceConfig) (*service.PersistenceS
 	return facade, nil
 }
 
-func ConfigurePersistence(ctx context.Context, conf *PersistenceConfig) error {
+func ConfigurePersistence(ctx context.Context, environ *Environment, conf *PersistenceConfig) error {
 	facade, err := NewPersistenceServiceFacade(conf)
 	if err != nil {
 		return err
@@ -111,6 +117,6 @@ func ConfigurePersistence(ctx context.Context, conf *PersistenceConfig) error {
 	isolation := GetIsolationFromContext(ctx)
 	isolation.persistenceServiceFacade = facade
 
-	persistenceServiceFacade = facade
+	environ.PersistentService = facade
 	return nil
 }
